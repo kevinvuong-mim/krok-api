@@ -1,0 +1,76 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  // ID & Primary Key
+  id String @id @default(uuid())
+
+  // Authentication
+  password String?
+  email    String  @unique
+  googleId String? @unique
+
+  // Profile Information
+  avatar      String?
+  fullName    String?
+  phoneNumber String?
+  username    String? @unique
+
+  // Timestamps
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  // Account Status
+  isActive        Boolean @default(true)
+  isEmailVerified Boolean @default(false)
+
+  // Email Verification
+  verificationTokenExpiry DateTime?
+  verificationToken       String?   @unique
+
+  // Password Reset
+  passwordResetTokenExpiry DateTime?
+  passwordResetToken       String?   @unique
+
+  // Relations
+  sessions Session[]
+
+  @@index([email])
+  @@map("users")
+}
+
+model Session {
+  // ID & Primary Key
+  id String @id @default(uuid())
+
+  // User Relation
+  userId String
+
+  // Device Information
+  deviceName String?
+  deviceType String?
+  ipAddress  String?
+  userAgent  String?
+
+  // Timestamps
+  createdAt DateTime @default(now())
+
+  // Session Data
+  expiresAt    DateTime
+  refreshToken String
+  lastUsedAt   DateTime @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([lastUsedAt])
+  @@map("sessions")
+}

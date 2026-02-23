@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  postgres:
+    ports:
+      - '5432:5432'
+    restart: unless-stopped
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: mimkat
+      POSTGRES_USER: kwong2000
+      POSTGRES_PASSWORD: 1234abcd
+    container_name: mimkat-postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      retries: 5
+      timeout: 5s
+      interval: 10s
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+
+volumes:
+  postgres_data:
+    driver: local

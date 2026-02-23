@@ -1,0 +1,23 @@
+{
+  "sourceRoot": "src",
+  "generateOptions": {
+    "spec": true,
+    "flat": false
+  },
+  "collection": "@nestjs/schematics",
+  "compilerOptions": {
+    "watchAssets": true,
+    "deleteOutDir": true,
+    "assets": [
+      {
+        "outDir": "./dist",
+        "include": "**/*.prisma"
+      },
+      {
+        "watchAssets": true,
+        "include": "mail/templates/**/*"
+      }
+    ]
+  },
+  "$schema": "https://json.schemastore.org/nest-cli"
+}
