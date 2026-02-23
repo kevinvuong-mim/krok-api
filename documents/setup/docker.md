@@ -1,6 +1,6 @@
 # Hướng dẫn sử dụng Docker cho Database
 
-Tài liệu này hướng dẫn cách sử dụng Docker để chạy PostgreSQL database cho dự án mimkat-api.
+Tài liệu này hướng dẫn cách sử dụng Docker để chạy PostgreSQL database cho dự án krok-api.
 
 ## Tại sao nên dùng Docker?
 
@@ -59,9 +59,9 @@ services:
       - '5432:5432'
     restart: unless-stopped
     image: postgres:16-alpine
-    container_name: mimkat-postgres
+    container_name: krok-postgres
     environment:
-      POSTGRES_DB: mimkat
+      POSTGRES_DB: krok
       POSTGRES_USER: kwong2000
       POSTGRES_PASSWORD: 1234abcd
     volumes:
@@ -83,14 +83,14 @@ Khi sử dụng Docker, database sẽ có thông tin kết nối:
 
 - **Port**: `5432`
 - **Host**: `localhost`
-- **Database**: `mimkat`
+- **Database**: `krok`
 - **Password**: `1234abcd`
 - **Username**: `kwong2000`
 
 **Connection String cho .env:**
 
 ```env
-DATABASE_URL="postgresql://kwong2000:1234abcd@localhost:5432/mimkat"
+DATABASE_URL="postgresql://kwong2000:1234abcd@localhost:5432/krok"
 ```
 
 ## Sử dụng
@@ -114,7 +114,7 @@ docker-compose ps
 docker ps
 ```
 
-Bạn sẽ thấy container `mimkat-postgres` đang chạy.
+Bạn sẽ thấy container `krok-postgres` đang chạy.
 
 ### 3. Xem logs
 
@@ -152,10 +152,10 @@ docker-compose up -d
 
 ```bash
 # Từ docker-compose
-docker-compose exec postgres psql -U kwong2000 -d mimkat
+docker-compose exec postgres psql -U kwong2000 -d krok
 
 # Hoặc từ docker
-docker exec -it mimkat-postgres psql -U kwong2000 -d mimkat
+docker exec -it krok-postgres psql -U kwong2000 -d krok
 ```
 
 Sau đó bạn có thể chạy SQL commands:
@@ -191,17 +191,17 @@ npm run prisma:migrate
 
 ```bash
 # Export database ra file
-docker-compose exec postgres pg_dump -U kwong2000 mimkat > backup.sql
+docker-compose exec postgres pg_dump -U kwong2000 krok > backup.sql
 
 # Hoặc với timestamp
-docker-compose exec postgres pg_dump -U kwong2000 mimkat > backup-$(date +%Y%m%d-%H%M%S).sql
+docker-compose exec postgres pg_dump -U kwong2000 krok > backup-$(date +%Y%m%d-%H%M%S).sql
 ```
 
 ### Restore database từ backup
 
 ```bash
 # Import từ file backup
-docker-compose exec -T postgres psql -U kwong2000 mimkat < backup.sql
+docker-compose exec -T postgres psql -U kwong2000 krok < backup.sql
 ```
 
 ### Thay đổi mật khẩu
@@ -254,7 +254,7 @@ ports:
 Và cập nhật `DATABASE_URL`:
 
 ```env
-DATABASE_URL="postgresql://kwong2000:1234abcd@localhost:5433/mimkat"
+DATABASE_URL="postgresql://kwong2000:1234abcd@localhost:5433/krok"
 ```
 
 ### Container không start
@@ -351,13 +351,13 @@ docker-compose logs -f postgres
 docker-compose ps
 
 # Kết nối PostgreSQL CLI
-docker-compose exec postgres psql -U kwong2000 -d mimkat
+docker-compose exec postgres psql -U kwong2000 -d krok
 
 # Backup
-docker-compose exec postgres pg_dump -U kwong2000 mimkat > backup.sql
+docker-compose exec postgres pg_dump -U kwong2000 krok > backup.sql
 
 # Restore
-docker-compose exec -T postgres psql -U kwong2000 mimkat < backup.sql
+docker-compose exec -T postgres psql -U kwong2000 krok < backup.sql
 ```
 
 ---

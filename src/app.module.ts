@@ -5,9 +5,9 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 
 import { AppService } from '@/app.service';
 import { AuthModule } from '@/auth/auth.module';
-import { KrokModule } from '@/krok/krok.module';
 import { AppController } from '@/app.controller';
 import { TasksModule } from '@/tasks/tasks.module';
+import { VideoModule } from '@/video/video.module';
 import { UsersModule } from '@/users/users.module';
 import { PrismaModule } from '@/prisma/prisma.module';
 import { HttpExceptionFilter } from '@/common/filters';
@@ -35,8 +35,8 @@ import { ImageProcessingModule } from '@/image-processing/image-processing.modul
   ],
   imports: [
     AuthModule,
-    KrokModule,
     TasksModule,
+    VideoModule,
     UsersModule,
     PrismaModule,
     StorageModule,

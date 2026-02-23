@@ -107,8 +107,8 @@ Implementation cụ thể cho AWS S3 và S3-compatible services.
 AWS_REGION="ap-southeast-1"
 AWS_ACCESS_KEY_ID="your-access-key"
 AWS_SECRET_ACCESS_KEY="your-secret-key"
-AWS_BUCKET_NAME="mimkat-storage"
-AWS_ENDPOINT="https://oss.s3.mimkat.vn"
+AWS_BUCKET_NAME="krok-storage"
+AWS_ENDPOINT="https://oss.s3.krok.vn"
 ```
 
 **Required variables:**

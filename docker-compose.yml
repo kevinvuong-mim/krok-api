@@ -7,10 +7,10 @@ services:
     restart: unless-stopped
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: mimkat
+      POSTGRES_DB: krok
       POSTGRES_USER: kwong2000
       POSTGRES_PASSWORD: 1234abcd
-    container_name: mimkat-postgres
+    container_name: krok-postgres
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

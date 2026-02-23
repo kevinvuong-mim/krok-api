@@ -4,9 +4,8 @@ import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { SearchItem, VideoRenderer, InnertubeConfig } from './interfaces';
 
 @Injectable()
-export class KrokService {
+export class VideoService {
   private static readonly YOUTUBE_HOME_URL = 'https://www.youtube.com';
-  private static readonly YOUTUBE_SEARCH_API_URL = 'https://www.youtube.com/youtubei/v1/search';
   private static readonly USER_AGENT =
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36';
 
@@ -14,7 +13,7 @@ export class KrokService {
     const config = await this.getInnertubeConfig();
 
     const response = await axios.post(
-      `${KrokService.YOUTUBE_SEARCH_API_URL}?key=${encodeURIComponent(config.apiKey)}`,
+      `${VideoService.YOUTUBE_HOME_URL}/youtubei/v1/search?key=${encodeURIComponent(config.apiKey)}`,
       {
         query,
         context: {
@@ -30,9 +29,9 @@ export class KrokService {
         headers: {
           Accept: '*/*',
           'Content-Type': 'application/json',
-          Origin: KrokService.YOUTUBE_HOME_URL,
-          'User-Agent': KrokService.USER_AGENT,
-          Referer: `${KrokService.YOUTUBE_HOME_URL}/`,
+          Origin: VideoService.YOUTUBE_HOME_URL,
+          'User-Agent': VideoService.USER_AGENT,
+          Referer: `${VideoService.YOUTUBE_HOME_URL}/`,
         },
       },
     );
@@ -46,16 +45,17 @@ export class KrokService {
   }
 
   private async getInnertubeConfig(): Promise<InnertubeConfig> {
-    const response = await axios.get<string>(KrokService.YOUTUBE_HOME_URL, {
+    const response = await axios.get<string>(VideoService.YOUTUBE_HOME_URL, {
       timeout: 20000,
       responseType: 'text',
       headers: {
-        'User-Agent': KrokService.USER_AGENT,
+        'User-Agent': VideoService.USER_AGENT,
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       },
     });
 
     const html = response.data;
+
     const apiKey = this.extractHtmlConfigValue(html, 'INNERTUBE_API_KEY');
     const clientName =
       this.extractHtmlConfigValue(html, 'INNERTUBE_CLIENT_NAME') ||

@@ -1,7 +1,7 @@
 import { Transform } from 'class-transformer';
 import { IsString, IsOptional, IsNotEmpty } from 'class-validator';
 
-export class SearchKrokDto {
+export class SearchVideoDto {
   @IsString()
   @IsNotEmpty()
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))

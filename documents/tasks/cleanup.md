@@ -1,6 +1,6 @@
 # Scheduled Cleanup Tasks
 
-Tài liệu này mô tả chi tiết các cron job được triển khai trong file `src/tasks/cleanup.service.ts` của dự án Mimkat API. Các tác vụ này giúp tự động dọn dẹp dữ liệu cũ, không còn giá trị, nhằm đảm bảo hệ thống luôn sạch sẽ, bảo mật và tối ưu hiệu năng.
+Tài liệu này mô tả chi tiết các cron job được triển khai trong file `src/tasks/cleanup.service.ts` của dự án Krok API. Các tác vụ này giúp tự động dọn dẹp dữ liệu cũ, không còn giá trị, nhằm đảm bảo hệ thống luôn sạch sẽ, bảo mật và tối ưu hiệu năng.
 
 ## 1. cleanupUnverifiedAccounts
 

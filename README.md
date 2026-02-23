@@ -1,6 +1,6 @@
-# Mimkat API
+# Krok API
 
-Backend API for Mimkat application built with NestJS, PostgreSQL, and Prisma ORM.
+Backend API for Krok application built with NestJS, PostgreSQL, and Prisma ORM.
 
 ## 📋 Table of Contents
 
@@ -63,8 +63,8 @@ Backend API for Mimkat application built with NestJS, PostgreSQL, and Prisma ORM
 ### 1. Clone repository
 
 ```bash
-git clone https://github.com/kevinvuong-mim/mimkat-api.git
-cd mimkat-api
+git clone https://github.com/kevinvuong-mim/krok-api.git
+cd krok-api
 ```
 
 ### 2. Install dependencies
@@ -94,8 +94,8 @@ docker-compose up -d
 This will start:
 
 - Password: `1234abcd`
+- Database name: `krok`
 - Username: `kwong2000`
-- Database name: `mimkat`
 - PostgreSQL on port `5432`
 
 ### 5. Run migrations
@@ -120,7 +120,7 @@ Create a `.env` file in the root directory with the following environment variab
 
 ```env
 # Database
-DATABASE_URL="postgresql://kwong2000:1234abcd@localhost:5432/mimkat"
+DATABASE_URL="postgresql://kwong2000:1234abcd@localhost:5432/krok"
 
 # JWT
 JWT_SECRET="your-jwt-secret-key-at-least-32-chars"
@@ -134,7 +134,7 @@ GOOGLE_CALLBACK_URL="http://localhost:3000/auth/google/callback"
 # Email
 MAIL_PORT=587
 MAIL_HOST="smtp.gmail.com"
-MAIL_FROM="noreply@mimkat.com"
+MAIL_FROM="noreply@krok.com"
 MAIL_USER="your-email@gmail.com"
 MAIL_PASSWORD="your-app-password"
 
@@ -147,9 +147,9 @@ NODE_ENV="development"
 
 # AWS S3 Configuration
 AWS_REGION="ap-southeast-1"
-AWS_BUCKET_NAME="mimkat-storage"
+AWS_BUCKET_NAME="krok-storage"
 AWS_ACCESS_KEY_ID="your-access-key"
-AWS_ENDPOINT="https://oss.s3.mimkat.vn"
+AWS_ENDPOINT="https://oss.s3.krok.vn"
 AWS_SECRET_ACCESS_KEY="your-secret-key"
 ```
 
@@ -218,7 +218,7 @@ docker-compose down      # Stop database
 ## 📁 Project Structure
 
 ```
-mimkat-api/
+krok-api/
 ├── documents/             # Project documentation
 │   ├── apis/              # API documentation
 │   │   ├── auth/          # Auth endpoints docs
