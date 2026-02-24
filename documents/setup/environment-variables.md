@@ -517,6 +517,65 @@ AWS_ENDPOINT="https://sgp1.digitaloceanspaces.com"
 
 ---
 
+## 8. Redis | BullMQ Configuration
+
+### REDIS_HOST
+
+Host của Redis server dùng cho queue karaoke.
+
+**Ví dụ:**
+
+```env
+REDIS_HOST="localhost"
+```
+
+### REDIS_PORT
+
+Cổng Redis server.
+
+**Ví dụ:**
+
+```env
+REDIS_PORT=6379
+```
+
+### REDIS_PASSWORD
+
+Mật khẩu Redis. Nếu Redis không bật auth thì có thể để trống, nhưng khuyến nghị đặt password.
+
+**Ví dụ:**
+
+```env
+REDIS_PASSWORD="redis-password"
+```
+
+### KARAOKE_QUEUE_NAME
+
+Tên queue BullMQ mà API và worker cùng dùng.
+
+**Ví dụ:**
+
+```env
+KARAOKE_QUEUE_NAME="karaoke-processing"
+```
+
+### KARAOKE_JOB_NAME
+
+Tên job mà API push vào queue và worker sẽ xử lý.
+
+**Ví dụ:**
+
+```env
+KARAOKE_JOB_NAME="process-video"
+```
+
+**Lưu ý:**
+
+- `KARAOKE_QUEUE_NAME` và `KARAOKE_JOB_NAME` phải giống nhau giữa API và worker
+- Trong `docker-compose.yml`, worker đang override `REDIS_HOST=redis`
+
+---
+
 ## Tổng hợp - File .env hoàn chỉnh
 
 Sau khi lấy được tất cả các biến, thêm chúng vào file `.env` của dự án:
@@ -554,6 +613,13 @@ AWS_BUCKET_NAME="krok-storage"
 AWS_ACCESS_KEY_ID="your-access-key"
 AWS_ENDPOINT="https://oss.s3.krok.vn"
 AWS_SECRET_ACCESS_KEY="your-secret-key"
+
+# Redis | BullMQ
+REDIS_PORT=6379
+REDIS_HOST="localhost"
+REDIS_PASSWORD="redis-password"
+KARAOKE_JOB_NAME="process-video"
+KARAOKE_QUEUE_NAME="karaoke-processing"
 ```
 
 **Lưu ý quan trọng:**
