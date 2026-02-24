@@ -8,7 +8,7 @@ import tempfile
 import subprocess
 from typing import Any
 from pathlib import Path
-from lyrics_generator import generate_lyrics as generate_lyrics_phase1
+from lyrics_generator import generate_lyrics
 
 
 def run(command: list[str], cwd: Path | None = None) -> None:
@@ -53,11 +53,11 @@ def update_asset_status(
 
 def upload_to_storage(local_file: Path, object_key: str, content_type: str) -> str:
     endpoint = os.getenv("AWS_ENDPOINT")
-    public_base_url = os.getenv("KARAOKE_PUBLIC_BASE_URL") or endpoint
-    region = os.getenv("AWS_REGION") or "us-east-1"
     bucket_name = os.getenv("AWS_BUCKET_NAME")
     access_key = os.getenv("AWS_ACCESS_KEY_ID")
+    region = os.getenv("AWS_REGION") or "us-east-1"
     secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+    public_base_url = os.getenv("KARAOKE_PUBLIC_BASE_URL") or endpoint
 
     if not endpoint or not bucket_name or not access_key or not secret_key:
         raise RuntimeError(
@@ -85,7 +85,7 @@ def upload_to_storage(local_file: Path, object_key: str, content_type: str) -> s
 def generate_lyrics(vocals_path: Path, output_path: Path) -> list[dict[str, Any]]:
     language = os.getenv("WHISPER_LANGUAGE") or "vi"
 
-    words = generate_lyrics_phase1(str(vocals_path), language=language)
+    words = generate_lyrics(str(vocals_path), language=language)
 
     output_path.write_text(
         json.dumps(words, ensure_ascii=False, indent=2), encoding="utf-8"

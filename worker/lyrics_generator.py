@@ -10,7 +10,6 @@ from phonemizer.separator import Separator
 from phonemizer.backend import EspeakBackend
 
 
-
 class LyricsGenerator:
     def __init__(self, whisper_model: str = "medium", language: str = "vi"):
         self.whisper_model = whisper.load_model(whisper_model)
