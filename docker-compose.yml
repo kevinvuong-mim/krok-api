@@ -1,23 +1,57 @@
-version: '3.8'
-
 services:
+  worker:
+    env_file:
+      - .env
+    restart: unless-stopped
+    container_name: krok-worker
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    environment:
+      REDIS_PORT: 6379
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      KARAOKE_JOB_NAME: ${KARAOKE_JOB_NAME:-process-video}
+      KARAOKE_QUEUE_NAME: ${KARAOKE_QUEUE_NAME:-karaoke-processing}
+      DATABASE_URL: postgresql://kwong2000:1234abcd@postgres:5432/krok
+
+  redis:
+    ports:
+      - '6379:6379'
+    image: redis:7-alpine
+    restart: unless-stopped
+    container_name: krok-redis
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    healthcheck:
+      retries: 10
+      timeout: 3s
+      interval: 5s
+      test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', 'ping']
+    command: ['sh', '-c', 'redis-server --requirepass "$REDIS_PASSWORD"']
+
   postgres:
     ports:
       - '5432:5432'
     restart: unless-stopped
     image: postgres:16-alpine
+    container_name: krok-postgres
     environment:
       POSTGRES_DB: krok
       POSTGRES_USER: kwong2000
       POSTGRES_PASSWORD: 1234abcd
-    container_name: krok-postgres
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       retries: 5
       timeout: 5s
       interval: 10s
-      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      test: ['CMD-SHELL', 'pg_isready -U kwong2000 -d krok']
 
 volumes:
   postgres_data:

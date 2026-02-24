@@ -11,6 +11,7 @@ import { VideoModule } from '@/video/video.module';
 import { UsersModule } from '@/users/users.module';
 import { PrismaModule } from '@/prisma/prisma.module';
 import { HttpExceptionFilter } from '@/common/filters';
+import { KaraokeModule } from '@/karaoke/karaoke.module';
 import { StorageModule } from '@/storage/storage.module';
 import { JwtAuthGuard } from '@/auth/guards/jwt-auth.guard';
 import { VerificationModule } from '@/verification/verification.module';
@@ -39,6 +40,7 @@ import { ImageProcessingModule } from '@/image-processing/image-processing.modul
     VideoModule,
     UsersModule,
     PrismaModule,
+    KaraokeModule,
     StorageModule,
     VerificationModule,
     ImageProcessingModule,

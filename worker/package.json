@@ -1,0 +1,13 @@
+{
+  "name": "krok-worker",
+  "private": true,
+  "version": "0.0.1",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node bullmq-worker.js"
+  },
+  "dependencies": {
+    "bullmq": "^5.58.5",
+    "ioredis": "^5.8.2"
+  }
+}

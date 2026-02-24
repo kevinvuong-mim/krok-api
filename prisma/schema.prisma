@@ -74,3 +74,31 @@ model Session {
   @@index([lastUsedAt])
   @@map("sessions")
 }
+
+enum KaraokeAssetStatus {
+  READY
+  FAILED
+  PROCESSING
+}
+
+model KaraokeAsset {
+  // ID & Primary Key
+  id String @id @default(uuid())
+
+  // Video Identification
+  videoId String  @unique
+  jobId   String? @unique
+
+  // Processing Results
+  instrumentalUrl String?
+  lyricsUrl       String?
+
+  // Status Tracking
+  status KaraokeAssetStatus @default(PROCESSING)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+
+  @@index([status])
+  @@map("karaoke_assets")
+}
