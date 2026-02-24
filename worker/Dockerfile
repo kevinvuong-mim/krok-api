@@ -2,7 +2,7 @@ FROM node:20-bookworm
 WORKDIR /app/worker
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 python3-pip ffmpeg git \
+  && apt-get install -y --no-install-recommends python3 python3-pip ffmpeg git espeak-ng libsndfile1 \
   && rm -rf /var/lib/apt/lists/*
 
 COPY worker/package.json ./package.json

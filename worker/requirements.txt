@@ -5,3 +5,5 @@ torchaudio==2.5.1
 demucs==4.0.1
 yt-dlp
 openai-whisper
+phonemizer==3.2.1
+transformers==4.36.0
