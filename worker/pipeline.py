@@ -3,12 +3,12 @@ import sys
 import json
 import boto3
 import shlex
-import whisper
 import psycopg2
 import tempfile
 import subprocess
 from typing import Any
 from pathlib import Path
+from lyrics_generator import generate_lyrics as generate_lyrics_phase1
 
 def run(command: list[str], cwd: Path | None = None) -> None:
     process = subprocess.run(
@@ -82,26 +82,14 @@ def upload_to_storage(local_file: Path, object_key: str, content_type: str) -> s
 
 
 def generate_lyrics(vocals_path: Path, output_path: Path) -> list[dict[str, Any]]:
-    model_name = os.getenv("WHISPER_MODEL") or "base"
-    language = os.getenv("WHISPER_LANGUAGE")
+    """
+    Generate lyrics using Phase 1 pipeline:
+    Audio → Whisper → Phoneme → wav2vec2 Alignment → Timing
+    """
+    language = os.getenv("WHISPER_LANGUAGE") or "en"
 
-    model = whisper.load_model(model_name)
-    result = model.transcribe(
-        str(vocals_path), word_timestamps=True, language=language, verbose=False
-    )
-
-    words: list[dict[str, Any]] = []
-
-    for segment in result.get("segments", []):
-        for item in segment.get("words", []):
-            word = str(item.get("word", "")).strip()
-
-            if not word:
-                continue
-
-            start = float(item.get("start", 0.0))
-            end = float(item.get("end", start))
-            words.append({"word": word, "start": start, "end": end})
+    # Use Phase 1 pipeline
+    words = generate_lyrics_phase1(str(vocals_path), language=language)
 
     output_path.write_text(
         json.dumps(words, ensure_ascii=False, indent=2), encoding="utf-8"
