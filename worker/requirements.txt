@@ -6,8 +6,4 @@ demucs==4.0.1
 yt-dlp
 openai-whisper
 phonemizer==3.2.1
-librosa==0.10.0
-soundfile==0.12.1
 transformers==4.36.0
-numpy==1.24.3
-scipy==1.11.4

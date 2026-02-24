@@ -1,61 +1,48 @@
-"""
-Phase 1: Audio → Phoneme → Lyric-like Text → Timing
-
-Pipeline:
-1. Whisper (rough transcription with beam search)
-2. Phonemizer (convert text to phonemes)
-3. wav2vec2 alignment (forced alignment using phonemes)
-"""
-
 import os
+import re
 import json
-import numpy as np
-import librosa
-import soundfile as sf
-import whisper
-from pathlib import Path
-from typing import Any
-from phonemizer.backend import EspeakBackend
-from phonemizer.separator import Separator
-from transformers import Wav2Vec2Processor, Wav2Vec2ForCTC
 import torch
+import whisper
+import torchaudio
+import unicodedata
+from typing import Any
+from phonemizer.separator import Separator
+from phonemizer.backend import EspeakBackend
+
 
 
 class LyricsGenerator:
-    """Generate lyrics with timing from audio."""
-
-    def __init__(self, whisper_model: str = "medium", language: str = "en"):
-        """
-        Initialize LyricsGenerator.
-
-        Args:
-            whisper_model: Whisper model size (tiny, base, small, medium, large)
-            language: Language code for phonemizer (en, vi, etc.)
-        """
+    def __init__(self, whisper_model: str = "medium", language: str = "vi"):
         self.whisper_model = whisper.load_model(whisper_model)
         self.language = language
-        self.sample_rate = 16000
 
-        # Load wav2vec2 model for alignment
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.processor = Wav2Vec2Processor.from_pretrained(
-            "facebook/wav2vec2-large-xlsr-53-english"
+
+        default_bundle = os.getenv("WAV2VEC2_ALIGN_BUNDLE") or "xlsr_300m"
+        self.align_bundle = self._load_alignment_bundle(default_bundle)
+        self.align_model = self.align_bundle.get_model().to(self.device).eval()
+        self.align_sample_rate = self.align_bundle.sample_rate
+        self.labels = self.align_bundle.get_labels()
+        self.label_to_id = {label: index for index, label in enumerate(self.labels)}
+        self.blank_id = self.label_to_id.get("<blk>", 0)
+        self.word_delim = "|"
+        self.labels_are_upper = any(
+            label.isalpha() and label.upper() == label for label in self.labels
         )
-        self.wav2vec_model = Wav2Vec2ForCTC.from_pretrained(
-            "facebook/wav2vec2-large-xlsr-53-english"
-        ).to(self.device)
-        self.wav2vec_model.eval()
+
+    def _load_alignment_bundle(self, name: str | None):
+        if not name:
+            return torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H
+
+        bundles = {
+            "base_960h": torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H,
+            "large_960h": torchaudio.pipelines.WAV2VEC2_ASR_LARGE_960H,
+            "xlsr_300m": torchaudio.pipelines.WAV2VEC2_XLSR_300M,
+        }
+
+        return bundles.get(name.lower(), torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H)
 
     def step1_transcribe_rough(self, audio_path: str) -> dict[str, Any]:
-        """
-        Step 1: Rough transcription using Whisper.
-
-        Optimized for singing with:
-        - beam_size=5
-        - best_of=5
-        - temperature=0
-        - condition_on_previous_text=False
-        """
         print(f"[Step 1] Transcribing: {audio_path}")
 
         result = self.whisper_model.transcribe(
@@ -68,7 +55,6 @@ class LyricsGenerator:
             verbose=False,
         )
 
-        # Extract text and segment info
         rough_text = result.get("text", "").strip()
         segments = result.get("segments", [])
 
@@ -81,11 +67,6 @@ class LyricsGenerator:
         }
 
     def step2_phonemize(self, text: str) -> list[str]:
-        """
-        Step 2: Convert text to phonemes using phonemizer.
-
-        Returns list of phonemes for each word.
-        """
         print(f"[Step 2] Phonemizing: {text}")
 
         backend = EspeakBackend(
@@ -94,143 +75,182 @@ class LyricsGenerator:
             with_stress=False,
         )
 
-        # Get phonemes with word separation
         separator = Separator(phone=" ", word="|")
         phonemes = backend.phonemize([text], separator=separator)
 
-        # Split by word and clean
         phoneme_words = [p.strip() for p in phonemes[0].split("|") if p.strip()]
 
         print(f"[Step 2] Phonemes: {phoneme_words}")
 
         return phoneme_words
 
-    def _load_audio(self, audio_path: str) -> tuple[np.ndarray, int]:
-        """Load audio and resample to 16kHz."""
-        y, sr = librosa.load(audio_path, sr=None, mono=True)
+    def _load_audio(self, audio_path: str) -> tuple[torch.Tensor, int]:
+        waveform, sample_rate = torchaudio.load(audio_path)
 
-        if sr != self.sample_rate:
-            y = librosa.resample(y, orig_sr=sr, target_sr=self.sample_rate)
+        if waveform.size(0) > 1:
+            waveform = waveform.mean(dim=0, keepdim=True)
 
-        return y, self.sample_rate
+        if sample_rate != self.align_sample_rate:
+            resampler = torchaudio.transforms.Resample(
+                orig_freq=sample_rate, new_freq=self.align_sample_rate
+            )
+            waveform = resampler(waveform)
 
-    def _align_with_wav2vec2(
-        self, audio: np.ndarray, phoneme_sequence: str
+        return waveform, self.align_sample_rate
+
+    def _strip_diacritics(self, text: str) -> str:
+        decomposed = unicodedata.normalize("NFD", text)
+        stripped = "".join(char for char in decomposed if not unicodedata.combining(char))
+        return stripped.replace("đ", "d").replace("Đ", "D")
+
+    def _normalize_text_for_alignment(self, text: str) -> str:
+        normalized = self._strip_diacritics(text)
+        normalized = normalized.upper() if self.labels_are_upper else normalized.lower()
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+
+        filtered: list[str] = []
+        for char in normalized:
+            if char == " ":
+                if self.word_delim in self.label_to_id:
+                    filtered.append(self.word_delim)
+                continue
+
+            if char in self.label_to_id:
+                filtered.append(char)
+
+        return "".join(filtered)
+
+    def _tokenize(self, text: str) -> torch.Tensor:
+        token_ids = [self.label_to_id[char] for char in text if char in self.label_to_id]
+        return torch.tensor(token_ids, dtype=torch.int64)
+
+    def _get_emissions(self, waveform: torch.Tensor) -> torch.Tensor:
+        with torch.inference_mode():
+            emissions, _ = self.align_model(waveform.to(self.device))
+            emissions = torch.log_softmax(emissions, dim=-1)
+
+        return emissions[0].cpu()
+
+    def _align_words_from_text(
+        self, waveform: torch.Tensor, transcript: str
     ) -> list[dict[str, Any]]:
-        """
-        Perform forced alignment using wav2vec2.
+        normalized_text = self._normalize_text_for_alignment(transcript)
 
-        Returns list of phonemes with timing.
-        """
-        # Prepare audio for wav2vec2
-        inputs = self.processor(
-            audio, sampling_rate=self.sample_rate, return_tensors="pt", padding=True
+        if not normalized_text:
+            return []
+
+        tokens = self._tokenize(normalized_text)
+        emissions = self._get_emissions(waveform)
+
+        aligned_tokens, scores = torchaudio.functional.forced_align(
+            emissions, tokens, blank=self.blank_id
         )
+        spans = torchaudio.functional.merge_tokens(aligned_tokens, scores)
 
-        # Get wav2vec2 outputs
-        with torch.no_grad():
-            logits = self.wav2vec_model(
-                inputs.input_values.to(self.device),
-                attention_mask=inputs.attention_mask.to(self.device),
-            ).logits
+        audio_duration = waveform.size(1) / self.align_sample_rate
+        frame_duration = audio_duration / emissions.size(0)
 
-        # Get predictions
-        predicted_ids = torch.argmax(logits, dim=-1)
-        predicted_ids_list = predicted_ids[0].cpu().numpy()
+        words: list[dict[str, Any]] = []
+        current_chars: list[str] = []
+        current_start: float | None = None
+        current_end: float | None = None
 
-        # Convert to characters
-        vocab = self.processor.tokenizer.get_vocab()
-        inv_vocab = {v: k for k, v in vocab.items()}
+        for span in spans:
+            label = self.labels[span.token]
 
-        predicted_chars = [inv_vocab.get(id, "[UNK]") for id in predicted_ids_list]
+            if label == self.word_delim:
+                if current_chars:
+                    words.append(
+                        {
+                            "word": "".join(current_chars),
+                            "start": current_start or 0.0,
+                            "end": current_end or 0.0,
+                        }
+                    )
 
-        # Calculate timing
-        num_frames = len(predicted_chars)
-        audio_duration = len(audio) / self.sample_rate
-        frame_duration = audio_duration / num_frames if num_frames > 0 else 0
+                current_chars = []
+                current_start = None
+                current_end = None
+                continue
 
-        # Simple alignment: map phonemes to frames
-        aligned_phonemes = []
-        phoneme_chars = phoneme_sequence.replace("|", " ").split()
+            if current_start is None:
+                current_start = span.start * frame_duration
 
-        current_pos = 0
-        for phoneme_idx, phoneme in enumerate(phoneme_chars):
-            # Find where this phoneme appears in predicted_chars
-            phoneme_length = len(phoneme.replace(" ", ""))
-            start_frame = current_pos
-            end_frame = min(current_pos + phoneme_length * 2, len(predicted_chars))
+            current_end = span.end * frame_duration
+            current_chars.append(label)
 
-            aligned_phonemes.append(
+        if current_chars:
+            words.append(
                 {
-                    "phoneme": phoneme,
-                    "start": start_frame * frame_duration,
-                    "end": end_frame * frame_duration,
-                    "start_frame": start_frame,
-                    "end_frame": end_frame,
+                    "word": "".join(current_chars),
+                    "start": current_start or 0.0,
+                    "end": current_end or 0.0,
                 }
             )
 
-            current_pos = end_frame
+        return words
 
-        return aligned_phonemes
-
-    def step3_align(self, audio_path: str, phoneme_words: list[str]) -> list[dict[str, Any]]:
-        """
-        Step 3: Forced alignment using wav2vec2.
-
-        Returns words with timing information.
-        """
+    def step3_align(
+        self, audio_path: str, rough_text: str
+    ) -> list[dict[str, Any]]:
         print(f"[Step 3] Aligning with wav2vec2...")
 
-        # Load audio
-        audio, sr = self._load_audio(audio_path)
+        waveform, _ = self._load_audio(audio_path)
+        aligned_words = self._align_words_from_text(waveform, rough_text)
 
-        # Convert phoneme words to sequence
-        phoneme_sequence = "|".join(phoneme_words)
+        print(f"[Step 3] Aligned {len(aligned_words)} words")
 
-        # Perform alignment
-        aligned_phonemes = self._align_with_wav2vec2(audio, phoneme_sequence)
+        if aligned_words:
+            return aligned_words
 
-        print(f"[Step 3] Aligned {len(aligned_phonemes)} phonemes")
+        audio_duration = waveform.size(1) / self.align_sample_rate
+        rough_words = re.findall(r"\S+", rough_text)
 
-        return aligned_phonemes
+        if not rough_words:
+            return []
+
+        word_duration = audio_duration / len(rough_words)
+
+        return [
+            {
+                "word": word,
+                "start": index * word_duration,
+                "end": (index + 1) * word_duration,
+            }
+            for index, word in enumerate(rough_words)
+        ]
 
     def generate(self, audio_path: str) -> dict[str, Any]:
-        """
-        Full Phase 1 pipeline: Audio → Phoneme → Alignment → Timing.
-
-        Returns:
-            {
-                "rough_text": str,
-                "phonemes": list[str],
-                "aligned_words": [
-                    {
-                        "phoneme": str,
-                        "start": float (seconds),
-                        "end": float (seconds),
-                    },
-                    ...
-                ]
-            }
-        """
         print("\n" + "=" * 60)
         print("Phase 1: Lyrics Generation Pipeline")
         print("=" * 60)
 
-        # Step 1: Rough transcription
         transcription = self.step1_transcribe_rough(audio_path)
         rough_text = transcription["rough_text"]
 
-        # Step 2: Phonemize
         phoneme_words = self.step2_phonemize(rough_text)
 
-        # Step 3: Alignment
-        aligned_words = self.step3_align(audio_path, phoneme_words)
+        aligned_words = self.step3_align(audio_path, rough_text)
+        rough_words = re.findall(r"\S+", rough_text)
+
+        combined_words: list[dict[str, Any]] = []
+        for index, aligned in enumerate(aligned_words):
+            word_text = rough_words[index] if index < len(rough_words) else aligned["word"]
+            phoneme = phoneme_words[index] if index < len(phoneme_words) else ""
+
+            combined_words.append(
+                {
+                    "word": word_text,
+                    "phoneme": phoneme,
+                    "start": aligned["start"],
+                    "end": aligned["end"],
+                }
+            )
 
         result = {
             "rough_text": rough_text,
             "phonemes": phoneme_words,
-            "aligned_words": aligned_words,
+            "aligned_words": combined_words,
         }
 
         print("\n" + "=" * 60)
@@ -241,17 +261,7 @@ class LyricsGenerator:
         return result
 
 
-def generate_lyrics(vocals_path: str, language: str = "en") -> list[dict[str, Any]]:
-    """
-    Generate lyrics with timing from vocal audio.
-
-    Args:
-        vocals_path: Path to vocal audio file
-        language: Language code (en, vi, etc.)
-
-    Returns:
-        List of words with timing: [{"word": str, "start": float, "end": float}, ...]
-    """
+def generate_lyrics(vocals_path: str, language: str = "vi") -> list[dict[str, Any]]:
     generator = LyricsGenerator(
         whisper_model=os.getenv("WHISPER_MODEL", "medium"),
         language=language,
@@ -259,12 +269,11 @@ def generate_lyrics(vocals_path: str, language: str = "en") -> list[dict[str, An
 
     result = generator.generate(vocals_path)
 
-    # Convert aligned phonemes to word format
     words = []
     for item in result["aligned_words"]:
         words.append(
             {
-                "word": item["phoneme"],
+                "word": item["word"],
                 "start": item["start"],
                 "end": item["end"],
             }
@@ -274,7 +283,6 @@ def generate_lyrics(vocals_path: str, language: str = "en") -> list[dict[str, An
 
 
 if __name__ == "__main__":
-    # Test example
     import sys
 
     if len(sys.argv) < 2:

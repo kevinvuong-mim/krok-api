@@ -1,14 +1,15 @@
-# Hướng dẫn sử dụng Docker cho Database
+# Hướng dẫn sử dụng Docker cho Dự Án
 
-Tài liệu này hướng dẫn cách sử dụng Docker để chạy PostgreSQL database cho dự án krok-api.
+Tài liệu này hướng dẫn cách sử dụng Docker để chạy PostgreSQL, Redis, và Worker cho dự án krok-api.
 
 ## Tại sao nên dùng Docker?
 
-- ✅ Không cần cài đặt PostgreSQL trực tiếp trên máy
-- ✅ Dễ dàng khởi động và dừng database
-- ✅ Cấu hình nhất quán giữa các môi trường
-- ✅ Dễ dàng xóa và tạo lại database
-- ✅ Không ảnh hưởng đến các PostgreSQL instance khác trên máy
+- ✅ Không cần cài đặt các service (PostgreSQL, Redis, Python) trực tiếp trên máy
+- ✅ Dễ dàng khởi động, dừng, và quản lý các services
+- ✅ Cấu hình nhất quán giữa các môi trường (dev, staging, production)
+- ✅ Dễ dàng xóa và tạo lại database/cache
+- ✅ Worker có thể xử lý karaoke job một cách độc lập
+- ✅ Không ảnh hưởng đến các instances khác trên máy
 
 ## Yêu cầu
 
@@ -48,44 +49,37 @@ sudo usermod -aG docker $USER
 
 ## Cấu hình Docker Compose
 
-File `docker-compose.yml` đã được tạo sẵn trong thư mục gốc của dự án với cấu hình:
+File `docker-compose.yml` đã được tạo sẵn trong thư mục gốc của dự án với 3 services:
+
+1. **postgres** - PostgreSQL database
+2. **redis** - Redis cache/queue
+3. **worker** - Node.js + Python worker cho karaoke processing
+
+### Services trong docker-compose.yml
+
+#### PostgreSQL
 
 ```yaml
-version: '3.8'
-
-services:
-  postgres:
-    ports:
-      - '5432:5432'
-    restart: unless-stopped
-    image: postgres:16-alpine
-    container_name: krok-postgres
-    environment:
-      POSTGRES_DB: krok
-      POSTGRES_USER: kwong2000
-      POSTGRES_PASSWORD: 1234abcd
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      retries: 5
-      timeout: 5s
-      interval: 10s
-      test: ['CMD-SHELL', 'pg_isready -U postgres']
-
-volumes:
-  postgres_data:
-    driver: local
+postgres:
+  ports:
+    - '5432:5432'
+  image: postgres:16-alpine
+  container_name: krok-postgres
+  environment:
+    POSTGRES_DB: krok
+    POSTGRES_USER: kwong2000
+    POSTGRES_PASSWORD: 1234abcd
+  volumes:
+    - postgres_data:/var/lib/postgresql/data
 ```
 
-### Thông tin kết nối
-
-Khi sử dụng Docker, database sẽ có thông tin kết nối:
+**Thông tin kết nối:**
 
 - **Port**: `5432`
 - **Host**: `localhost`
 - **Database**: `krok`
-- **Password**: `1234abcd`
 - **Username**: `kwong2000`
+- **Password**: `1234abcd`
 
 **Connection String cho .env:**
 
@@ -93,40 +87,106 @@ Khi sử dụng Docker, database sẽ có thông tin kết nối:
 DATABASE_URL="postgresql://kwong2000:1234abcd@localhost:5432/krok"
 ```
 
+#### Redis
+
+```yaml
+redis:
+  ports:
+    - '6379:6379'
+  image: redis:7-alpine
+  container_name: krok-redis
+  environment:
+    REDIS_PASSWORD: ${REDIS_PASSWORD}
+  command: ['sh', '-c', 'redis-server --requirepass "$REDIS_PASSWORD"']
+```
+
+**Thông tin kết nối:**
+
+- **Port**: `6379`
+- **Host**: `localhost`
+- **Password**: Từ `REDIS_PASSWORD` trong `.env`
+
+**Lưu ý:** Redis dùng cho BullMQ queue xử lý karaoke jobs
+
+#### Worker
+
+```yaml
+worker:
+  container_name: krok-worker
+  build:
+    context: .
+    dockerfile: worker/Dockerfile
+  depends_on:
+    redis:
+      condition: service_healthy
+    postgres:
+      condition: service_healthy
+  environment:
+    REDIS_HOST: redis # (override) dùng service name
+    REDIS_PORT: 6379
+    REDIS_PASSWORD: ${REDIS_PASSWORD}
+    DATABASE_URL: postgresql://kwong2000:1234abcd@postgres:5432/krok
+    KARAOKE_JOB_NAME: ${KARAOKE_JOB_NAME:-process-video}
+    KARAOKE_QUEUE_NAME: ${KARAOKE_QUEUE_NAME:-karaoke-processing}
+```
+
+**Vai trò:** Xử lý karaoke processing jobs từ queue (lyrics generation, voice separation, etc.)
+
+**Lưu ý:** Worker auto-restart theo `api`, `redis`, `postgres` healthchecks
+
 ## Sử dụng
 
-### 1. Khởi động database
+### 1. Khởi động tất cả services (PostgreSQL + Redis + Worker)
 
 ```bash
 docker-compose up -d
 ```
 
-- Flag `-d` để chạy ở chế độ background (detached)
-- Lần đầu tiên sẽ mất vài giây để tải PostgreSQL image
+- Flag `-d` để chạy ở chế độ background
+- Lần đầu tiên sẽ mất vài giây/phút để build worker image và tải images
 
-### 2. Kiểm tra trạng thái
+### 2. Khởi động riêng lẻ
 
 ```bash
-# Xem các container đang chạy
+# Chỉ PostgreSQL
+docker-compose up -d postgres
+
+# PostgreSQL + Redis
+docker-compose up -d postgres redis
+
+# Thêm worker (phải có postgres + redis trước)
+docker-compose up -d postgres redis worker
+```
+
+### 3. Kiểm tra trạng thái
+
+```bash
+# Xem tất cả containers
 docker-compose ps
 
-# Hoặc
-docker ps
+# Chi tiết:
+# - krok-postgres: PostgreSQL database
+# - krok-redis: Redis queue
+# - krok-worker: Karaoke worker processor
 ```
 
-Bạn sẽ thấy container `krok-postgres` đang chạy.
-
-### 3. Xem logs
+### 4. Xem logs
 
 ```bash
-# Xem logs realtime
+# Xem tất cả logs realtime
+docker-compose logs -f
+
+# Chỉ PostgreSQL
 docker-compose logs -f postgres
 
-# Chỉ xem logs (không follow)
-docker-compose logs postgres
+# Chỉ Redis
+docker-compose logs -f redis
+
+# Chỉ Worker
+docker-compose logs -f worker
 ```
 
-### 4. Dừng database
+### 5. Dừng services
 
 ```bash
 # Dừng nhưng giữ lại data
@@ -136,11 +196,14 @@ docker-compose stop
 docker-compose down
 ```
 
-### 5. Khởi động lại
+### 6. Khởi động lại
 
 ```bash
 # Nếu đã stop
 docker-compose start
+
+# Hoặc dừng + khởi động lại
+docker-compose restart
 
 # Hoặc dùng up lại
 docker-compose up -d
@@ -148,14 +211,27 @@ docker-compose up -d
 
 ## Các lệnh hữu ích
 
+### Redis CLI
+
+```bash
+# Kết nối vào Redis CLI
+docker-compose exec redis redis-cli -a your-redis-password
+
+# Xem các keys trong redis
+KEYS *
+
+# Kiểm tra queue karaoke
+LLEN karaoke-processing
+
+# Thoát
+exit
+```
+
 ### Kết nối vào PostgreSQL CLI
 
 ```bash
 # Từ docker-compose
 docker-compose exec postgres psql -U kwong2000 -d krok
-
-# Hoặc từ docker
-docker exec -it krok-postgres psql -U kwong2000 -d krok
 ```
 
 Sau đó bạn có thể chạy SQL commands:
@@ -174,13 +250,35 @@ SELECT * FROM users;
 \q
 ```
 
-### Xóa tất cả data và khởi động lại
+### Logs của Worker
 
 ```bash
-# Dừng và xóa containers + volumes
+# Xem logs worker realtime
+docker-compose logs -f worker
+
+# Nếu worker crash, kiểm tra lỗi
+docker-compose logs worker | tail -100
+```
+
+**Lưu ý:** Worker sẽ tự restart nếu postgres/redis mất kết nối
+
+### Rebuild Worker image
+
+```bash
+# Rebuild từ Dockerfile khi code thay đổi
+docker-compose build worker
+
+# Rebuild và restart
+docker-compose up -d --build worker
+```
+
+### Xóa tất cả data
+
+```bash
+# Dừng + xóa containers + volumes (**cảnh báo: xóa data!**)
 docker-compose down -v
 
-# Khởi động lại
+# Khởi động lại từ đầu
 docker-compose up -d
 
 # Chạy lại migrations
@@ -204,27 +302,27 @@ docker-compose exec postgres pg_dump -U kwong2000 krok > backup-$(date +%Y%m%d-%
 docker-compose exec -T postgres psql -U kwong2000 krok < backup.sql
 ```
 
-### Thay đổi mật khẩu
+### Thay đổi mật khẩu Redis
 
-Nếu muốn thay đổi mật khẩu, sửa trong `docker-compose.yml`:
+Nếu muốn thay đổi mật khẩu Redis, sửa trong `.env`:
 
-```yaml
-environment:
-  POSTGRES_PASSWORD: your-new-password
+```env
+# Từ
+REDIS_PASSWORD="redis-password"
+
+# Thành
+REDIS_PASSWORD="your-new-secure-password"
 ```
 
-Sau đó:
+Sau đó restart Redis:
 
 ```bash
-docker-compose down -v
-docker-compose up -d
+docker-compose restart redis
 ```
-
-Và cập nhật `DATABASE_URL` trong `.env`:
 
 ## Troubleshooting
 
-### Port 5432 đã được sử dụng
+### Port 5432 (PostgreSQL) đã được sử dụng
 
 **Lỗi:** `Error starting userland proxy: listen tcp4 0.0.0.0:5432: bind: address already in use`
 
@@ -247,8 +345,9 @@ kill -9 <PID>
 **Giải pháp 2:** Đổi port trong docker-compose.yml
 
 ```yaml
-ports:
-  - '5433:5432' # Đổi từ 5432 thành 5433
+postgres:
+  ports:
+    - '5433:5432' # Đổi từ 5432 thành 5433
 ```
 
 Và cập nhật `DATABASE_URL`:
@@ -256,6 +355,73 @@ Và cập nhật `DATABASE_URL`:
 ```env
 DATABASE_URL="postgresql://kwong2000:1234abcd@localhost:5433/krok"
 ```
+
+### Port 6379 (Redis) đã được sử dụng
+
+**Lỗi:** `Error starting userland proxy: listen tcp4 0.0.0.0:6379: bind: address already in use`
+
+**Nguyên nhân:** Đã có Redis khác đang chạy trên port 6379
+
+**Giải pháp:**
+
+```bash
+# Tìm process đang dùng port 6379
+lsof -i :6379
+
+# Kill process
+kill -9 <PID>
+
+# Hoặc đổi port trong docker-compose.yml
+redis:
+  ports:
+    - '6380:6379' # Đổi từ 6379 thành 6380
+```
+
+### Worker không start hoặc crash
+
+**Lỗi:** Worker container crash hoặc không chạy
+
+**Kiểm tra:**
+
+```bash
+# Xem status
+docker-compose ps
+
+# Xem logs
+docker-compose logs worker
+
+# Kiểm tra dependencies
+# - Redis phải sạch + running
+# - PostgreSQL phải running
+```
+
+**Nguyên nhân thường gặp:**
+
+1. **Worker build fail:** Docker image worker chưa được build đúng
+
+   ```bash
+   docker-compose build worker
+   docker-compose up -d worker
+   ```
+
+2. **Redis/Postgres chưa sẵn sàng:** Worker tries to connect trước khi dependent services healthy
+
+   ```bash
+   docker-compose up -d postgres redis
+   sleep 10
+   docker-compose up -d worker
+   ```
+
+3. **Environment variables sai:** Check `.env` có đủ biến không
+
+   ```bash
+   grep -E "REDIS_PASSWORD|KARAOKE" .env
+   ```
+
+4. **Python dependencies thiếu:** Check worker/Dockerfile
+   ```bash
+   docker-compose logs worker | grep Error
+   ```
 
 ### Container không start
 
@@ -290,8 +456,11 @@ docker-compose ps
 # Nếu unhealthy, xem logs
 docker-compose logs postgres
 
-# Test connection
+# Test connection PostgreSQL
 docker-compose exec postgres pg_isready -U kwong2000
+
+# Test connection Redis
+docker-compose exec redis redis-cli -a your-redis-password ping
 ```
 
 ### Data bị mất sau khi restart
@@ -305,58 +474,73 @@ docker-compose exec postgres pg_isready -U kwong2000
 
 ## Lưu ý quan trọng
 
+### 3 Services chính
+
+| Service      | Vai trò           | Port           | Image                  |
+| ------------ | ----------------- | -------------- | ---------------------- |
+| **postgres** | Database          | 5432           | postgres:16-alpine     |
+| **redis**    | Queue cache       | 6379           | redis:7-alpine         |
+| **worker**   | Karaoke processor | N/A (internal) | Custom (Node + Python) |
+
+### Healthchecks
+
+- **PostgreSQL:** Check `pg_isready` mỗi 10s
+- **Redis:** Check `redis-cli ping` mỗi 5s
+- **Worker:** Depends on Redis + PostgreSQL healthchecks
+
 ### Development vs Production
 
 - ⚠️ Cấu hình này chỉ dành cho **development**
-- ⚠️ **KHÔNG** dùng mật khẩu `postgres` cho production
-- ⚠️ Production nên dùng managed database (AWS RDS, Google Cloud SQL, etc.)
+- ⚠️ **KHÔNG** dùng mật khẩu mặc định ở trên cho production
+- ⚠️ Production nên dùng managed services (AWS RDS, ElastiCache, etc.)
 
 ### Security
 
-- Mật khẩu mặc định `1234abcd` chỉ dùng cho local development
-- Không expose port 5432 ra internet
+- Mật khẩu mặc định (`1234abcd` PostgreSQL, từ `.env` Redis) chỉ dùng cho local development
+- Không expose ports 5432/6379 ra internet
 - Không commit `.env` với credentials vào Git
 
 ### Performance
 
-- Docker trên macOS có thể chậm hơn native PostgreSQL
-- Nếu cần performance tốt hơn, cân nhắc cài PostgreSQL native
-- Volume mount được tối ưu cho development, chưa optimize cho production
+- Docker trên macOS có thể chậm hơn native services
+- Nếu cần performance tốt hơn, cân nhắc cài native (PostgreSQL, Redis)
+- Volume mount tối ưu cho development, chưa optimize cho production
 
 ### Data Persistence
 
-- Data được lưu trong Docker volume `postgres_data`
+- PostgreSQL data lưu trong Docker volume `postgres_data`
 - Volume tồn tại ngay cả khi container bị xóa
 - Chỉ mất data khi chạy `docker-compose down -v` hoặc xóa volume thủ công
+- Redis là in-memory, data mất khi restart (ngoài RDB persistence)
 
 ## Tóm tắt Commands
 
 ```bash
-# Khởi động
-docker-compose up -d
+# === Khởi động ===
+docker-compose up -d                # Tất cả services
+docker-compose up -d postgres redis  # Chỉ DB + Queue
+docker-compose up -d --build worker  # Rebuild worker
 
-# Dừng (giữ data)
-docker-compose stop
+# === Quản lý ===
+docker-compose ps                   # Xem status
+docker-compose logs -f              # Xem logs realtime
+docker-compose logs -f worker       # Xem logs worker
 
-# Dừng và xóa container (giữ data)
-docker-compose down
+# === Kết nối ===
+docker-compose exec postgres psql -U kwong2000 -d krok  # PostgreSQL CLI
+docker-compose exec redis redis-cli -a password          # Redis CLI
 
-# Xóa tất cả (bao gồm data)
-docker-compose down -v
+# === Dừng ===
+docker-compose stop                 # Dừng (giữ data)
+docker-compose down                 # Dừng + xóa containers
+docker-compose down -v              # Dừng + xóa data (**careful!**)
 
-# Xem logs
-docker-compose logs -f postgres
+# === Restart ===
+docker-compose restart              # Restart tất cả
+docker-compose restart worker       # Restart worker
 
-# Kiểm tra status
-docker-compose ps
-
-# Kết nối PostgreSQL CLI
-docker-compose exec postgres psql -U kwong2000 -d krok
-
-# Backup
+# === Backup ===
 docker-compose exec postgres pg_dump -U kwong2000 krok > backup.sql
-
-# Restore
 docker-compose exec -T postgres psql -U kwong2000 krok < backup.sql
 ```
 
@@ -367,4 +551,5 @@ docker-compose exec -T postgres psql -U kwong2000 krok < backup.sql
 - [Docker Documentation](https://docs.docker.com/)
 - [Docker Compose Documentation](https://docs.docker.com/compose/)
 - [PostgreSQL Docker Image](https://hub.docker.com/_/postgres)
-- [pgAdmin Docker Image](https://hub.docker.com/r/dpage/pgadmin4/)
+- [Redis Docker Image](https://hub.docker.com/_/redis)
+- [Environment Variables Guide](./environment-variables.md)
