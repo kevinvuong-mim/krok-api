@@ -8,7 +8,7 @@ import tempfile
 import subprocess
 from typing import Any
 from pathlib import Path
-from lyrics_generator import generate_lyrics
+from lyrics_generator import generate_lyrics as generate_lyrics_phase1
 
 
 def run(command: list[str], cwd: Path | None = None) -> None:
@@ -85,7 +85,7 @@ def upload_to_storage(local_file: Path, object_key: str, content_type: str) -> s
 def generate_lyrics(vocals_path: Path, output_path: Path) -> list[dict[str, Any]]:
     language = os.getenv("WHISPER_LANGUAGE") or "vi"
 
-    words = generate_lyrics(str(vocals_path), language=language)
+    words = generate_lyrics_phase1(str(vocals_path), language=language)
 
     output_path.write_text(
         json.dumps(words, ensure_ascii=False, indent=2), encoding="utf-8"
