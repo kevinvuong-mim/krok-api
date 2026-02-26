@@ -43,8 +43,8 @@ def update_asset_status(
                 """
                 UPDATE "karaoke_assets"
                 SET "status" = %s,
-                    "instrumentalUrl" = %s,
-                    "lyricsUrl" = %s
+                    "instrumentalUrl" = COALESCE(%s, "instrumentalUrl"),
+                    "lyricsUrl" = COALESCE(%s, "lyricsUrl")
                 WHERE "videoId" = %s
                 """,
                 (status, instrumental_url, lyrics_url, video_id),
@@ -187,21 +187,24 @@ def main() -> None:
     if len(sys.argv) < 2:
         raise RuntimeError("Worker payload argument is required")
 
-    payload = json.loads(sys.argv[1])
-    video_id = str(payload.get("videoId", "")).strip()
-    job_id = str(payload.get("jobId", "")).strip()
-
-    if not video_id:
-        raise RuntimeError("videoId is required")
+    video_id = ""
 
     try:
+        payload = json.loads(sys.argv[1])
+        video_id = str(payload.get("videoId", "")).strip()
+        job_id = str(payload.get("jobId", "")).strip()
+
+        if not video_id:
+            raise RuntimeError("videoId is required")
+
         result = process_video(video_id, job_id)
         print(json.dumps(result, ensure_ascii=False))
     except Exception:
-        try:
-            update_asset_status(video_id, "FAILED")
-        except Exception:
-            pass
+        if video_id:
+            try:
+                update_asset_status(video_id, "FAILED")
+            except Exception:
+                pass
 
         raise
 

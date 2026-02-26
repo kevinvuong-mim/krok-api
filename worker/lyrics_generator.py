@@ -16,18 +16,52 @@ class LyricsGenerator:
         self.language = language
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.word_delim = "|"
+        self.align_enabled = False
 
         default_bundle = os.getenv("WAV2VEC2_ALIGN_BUNDLE") or "xlsr_300m"
         self.align_bundle = self._load_alignment_bundle(default_bundle)
-        self.align_model = self.align_bundle.get_model().to(self.device).eval()
-        self.align_sample_rate = self.align_bundle.sample_rate
-        self.labels = self.align_bundle.get_labels()
-        self.label_to_id = {label: index for index, label in enumerate(self.labels)}
-        self.blank_id = self.label_to_id.get("<blk>", 0)
-        self.word_delim = "|"
-        self.labels_are_upper = any(
-            label.isalpha() and label.upper() == label for label in self.labels
-        )
+        self.align_model = None
+        self.align_sample_rate = 16000
+        self.labels: list[str] = []
+        self.label_to_id: dict[str, int] = {}
+        self.blank_id = 0
+        self.labels_are_upper = False
+
+        try:
+            self.align_model = self.align_bundle.get_model().to(self.device).eval()
+            self.align_sample_rate = self._get_bundle_sample_rate(self.align_bundle)
+            self.labels = self._get_bundle_labels(self.align_bundle)
+            self.label_to_id = {
+                label: index for index, label in enumerate(self.labels)
+            }
+            self.blank_id = self.label_to_id.get("<blk>", 0)
+            self.labels_are_upper = any(
+                label.isalpha() and label.upper() == label for label in self.labels
+            )
+            self.align_enabled = True
+        except Exception as error:
+            print(f"[Step 3] Wav2Vec2 alignment disabled: {error}")
+
+    def _get_bundle_labels(self, bundle) -> list[str]:
+        if hasattr(bundle, "get_labels") and callable(bundle.get_labels):
+            return list(bundle.get_labels())
+
+        labels = getattr(bundle, "labels", None)
+        if labels is not None:
+            return list(labels)
+
+        raise RuntimeError("Selected wav2vec2 bundle does not expose labels")
+
+    def _get_bundle_sample_rate(self, bundle) -> int:
+        sample_rate = getattr(bundle, "sample_rate", None)
+        if sample_rate is not None:
+            return int(sample_rate)
+
+        if hasattr(bundle, "get_sample_rate") and callable(bundle.get_sample_rate):
+            return int(bundle.get_sample_rate())
+
+        raise RuntimeError("Selected wav2vec2 bundle does not expose sample rate")
 
     def _load_alignment_bundle(self, name: str | None):
         if not name:
@@ -195,7 +229,15 @@ class LyricsGenerator:
         print(f"[Step 3] Aligning with wav2vec2...")
 
         waveform, _ = self._load_audio(audio_path)
-        aligned_words = self._align_words_from_text(waveform, rough_text)
+        aligned_words: list[dict[str, Any]] = []
+
+        if self.align_enabled:
+            try:
+                aligned_words = self._align_words_from_text(waveform, rough_text)
+            except Exception as error:
+                print(f"[Step 3] Forced alignment failed: {error}")
+        else:
+            print("[Step 3] Forced alignment unavailable, using duration fallback")
 
         print(f"[Step 3] Aligned {len(aligned_words)} words")
 
@@ -289,7 +331,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     audio_path = sys.argv[1]
-    language = sys.argv[2] if len(sys.argv) > 2 else "en"
+    language = sys.argv[2] if len(sys.argv) > 2 else "vi"
 
     result = generate_lyrics(audio_path, language)
     print(json.dumps(result, indent=2))
