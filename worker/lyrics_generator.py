@@ -10,6 +10,19 @@ from phonemizer.separator import Separator
 from phonemizer.backend import EspeakBackend
 
 
+# Whisper transcription thresholds - tune these to reduce hallucinations
+WHISPER_NO_SPEECH_THRESHOLD = 0.5  # Lower = stricter (default 0.6)
+WHISPER_LOGPROB_THRESHOLD = -0.8   # Higher = stricter (default -1.0)
+WHISPER_COMPRESSION_RATIO_THRESHOLD = 2.0  # Lower = stricter (default 2.4)
+
+# Audio energy threshold for detecting actual speech
+SILENCE_ENERGY_THRESHOLD = 0.01  # RMS energy below this = silence
+
+# VAD (Voice Activity Detection) settings
+VAD_THRESHOLD = 0.5  # Probability threshold for speech detection
+VAD_MIN_SPEECH_RATIO = 0.3  # Minimum ratio of speech frames in segment
+
+
 class LyricsGenerator:
     def __init__(self, whisper_model: str = "medium", language: str = "vi"):
         self.whisper_model = whisper.load_model(whisper_model)
@@ -18,6 +31,24 @@ class LyricsGenerator:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.word_delim = "|"
         self.align_enabled = False
+        self.vad_enabled = False
+
+        # Load Silero VAD model for voice activity detection
+        try:
+            self.vad_model, vad_utils = torch.hub.load(
+                repo_or_dir="snakers4/silero-vad",
+                model="silero_vad",
+                force_reload=False,
+                onnx=False,
+            )
+            self.vad_model = self.vad_model.to(self.device)
+            self.get_speech_timestamps = vad_utils[0]
+            self.vad_enabled = True
+            print("[VAD] Silero VAD loaded successfully")
+        except Exception as error:
+            print(f"[VAD] Silero VAD disabled: {error}")
+            self.vad_model = None
+            self.get_speech_timestamps = None
 
         default_bundle = os.getenv("WAV2VEC2_ALIGN_BUNDLE") or "xlsr_300m"
         self.align_bundle = self._load_alignment_bundle(default_bundle)
@@ -75,8 +106,129 @@ class LyricsGenerator:
 
         return bundles.get(name.lower(), torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H)
 
+    def _get_audio_energy(self, waveform: torch.Tensor, sample_rate: int, 
+                          start_time: float, end_time: float) -> float:
+        """Calculate RMS energy for a specific time range in the audio."""
+        start_sample = int(start_time * sample_rate)
+        end_sample = int(end_time * sample_rate)
+        
+        # Clamp to valid range
+        start_sample = max(0, start_sample)
+        end_sample = min(waveform.size(1), end_sample)
+        
+        if end_sample <= start_sample:
+            return 0.0
+        
+        segment = waveform[:, start_sample:end_sample]
+        rms = torch.sqrt(torch.mean(segment ** 2)).item()
+        return rms
+
+    def _get_speech_ratio_vad(self, waveform: torch.Tensor, sample_rate: int,
+                               start_time: float, end_time: float) -> float:
+        """
+        Use Silero VAD to determine what ratio of the segment contains speech.
+        Returns a value between 0.0 (no speech) and 1.0 (all speech).
+        """
+        if not self.vad_enabled or self.vad_model is None:
+            return 1.0  # Assume speech if VAD not available
+        
+        start_sample = int(start_time * sample_rate)
+        end_sample = int(end_time * sample_rate)
+        
+        start_sample = max(0, start_sample)
+        end_sample = min(waveform.size(1), end_sample)
+        
+        if end_sample <= start_sample:
+            return 0.0
+        
+        segment = waveform[:, start_sample:end_sample]
+        
+        # Silero VAD requires 16kHz audio
+        if sample_rate != 16000:
+            resampler = torchaudio.transforms.Resample(
+                orig_freq=sample_rate, new_freq=16000
+            )
+            segment = resampler(segment)
+        
+        # Flatten to 1D for VAD
+        segment_1d = segment.squeeze(0)
+        
+        try:
+            # Get speech timestamps from VAD
+            speech_timestamps = self.get_speech_timestamps(
+                segment_1d,
+                self.vad_model,
+                threshold=VAD_THRESHOLD,
+                sampling_rate=16000,
+                return_seconds=False,
+            )
+            
+            if not speech_timestamps:
+                return 0.0
+            
+            # Calculate total speech duration
+            total_speech_samples = sum(
+                ts["end"] - ts["start"] for ts in speech_timestamps
+            )
+            total_samples = segment_1d.size(0)
+            
+            return total_speech_samples / total_samples if total_samples > 0 else 0.0
+            
+        except Exception as error:
+            print(f"[VAD] Error processing segment: {error}")
+            return 1.0  # Assume speech on error
+
+    def _filter_silent_segments(self, segments: list[dict], 
+                                 waveform: torch.Tensor, 
+                                 sample_rate: int) -> list[dict]:
+        """
+        Filter out segments where there's no actual speech.
+        Uses VAD (Voice Activity Detection) to detect speech vs music/silence.
+        Whisper may hallucinate text for instrumental portions - this removes them.
+        """
+        filtered = []
+        removed_count = 0
+        
+        for segment in segments:
+            start_time = segment.get("start", 0)
+            end_time = segment.get("end", 0)
+            text = segment.get("text", "").strip()
+            
+            # First check energy (fast filter for true silence)
+            energy = self._get_audio_energy(waveform, sample_rate, start_time, end_time)
+            
+            if energy < SILENCE_ENERGY_THRESHOLD:
+                print(f"[Step 1] Filtered silent segment: '{text}' "
+                      f"(energy={energy:.4f})")
+                removed_count += 1
+                continue
+            
+            # Then check VAD for speech detection (catches music without vocals)
+            speech_ratio = self._get_speech_ratio_vad(waveform, sample_rate, start_time, end_time)
+            
+            if speech_ratio < VAD_MIN_SPEECH_RATIO:
+                print(f"[Step 1] Filtered non-speech segment: '{text}' "
+                      f"(speech_ratio={speech_ratio:.2f}, threshold={VAD_MIN_SPEECH_RATIO})")
+                removed_count += 1
+                continue
+            
+            filtered.append(segment)
+        
+        if removed_count > 0:
+            print(f"[Step 1] Removed {removed_count} hallucinated segment(s)")
+        
+        return filtered
+
     def step1_transcribe_rough(self, audio_path: str) -> dict[str, Any]:
         print(f"[Step 1] Transcribing: {audio_path}")
+
+        # Load audio for energy analysis
+        waveform, sample_rate = torchaudio.load(audio_path)
+        if waveform.size(0) > 1:
+            waveform = waveform.mean(dim=0, keepdim=True)
+
+        # Use initial_prompt to guide Whisper - reduces hallucinations
+        initial_prompt = "Lời bài hát."
 
         result = self.whisper_model.transcribe(
             audio_path,
@@ -86,16 +238,32 @@ class LyricsGenerator:
             condition_on_previous_text=False,
             language=self.language,
             verbose=False,
+            initial_prompt=initial_prompt,
+            # Stricter thresholds to prevent hallucinations
+            no_speech_threshold=WHISPER_NO_SPEECH_THRESHOLD,
+            logprob_threshold=WHISPER_LOGPROB_THRESHOLD,
+            compression_ratio_threshold=WHISPER_COMPRESSION_RATIO_THRESHOLD,
         )
 
-        rough_text = result.get("text", "").strip()
-        segments = result.get("segments", [])
+        raw_segments = result.get("segments", [])
+        raw_text = result.get("text", "").strip()
+        
+        # Filter segments with no actual audio energy (silence = hallucination)
+        filtered_segments = self._filter_silent_segments(raw_segments, waveform, sample_rate)
+        
+        # Rebuild text from filtered segments
+        rough_text = " ".join(seg.get("text", "").strip() for seg in filtered_segments)
+        rough_text = re.sub(r"\s+", " ", rough_text).strip()
 
-        print(f"[Step 1] Rough text: {rough_text}")
+        if len(filtered_segments) != len(raw_segments):
+            print(f"[Step 1] Raw text: {raw_text}")
+            print(f"[Step 1] Cleaned text: {rough_text}")
+        else:
+            print(f"[Step 1] Rough text: {rough_text}")
 
         return {
             "rough_text": rough_text,
-            "segments": segments,
+            "segments": filtered_segments,
             "language": result.get("language"),
         }
 
