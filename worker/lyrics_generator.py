@@ -4,28 +4,28 @@ import json
 import torch
 import whisper
 import torchaudio
-import unicodedata
 from typing import Any
-from phonemizer.separator import Separator
-from phonemizer.backend import EspeakBackend
 
 
 # Whisper transcription thresholds - tune these to reduce hallucinations
-WHISPER_NO_SPEECH_THRESHOLD = 0.5  # Lower = stricter (default 0.6)
-WHISPER_LOGPROB_THRESHOLD = -0.8   # Higher = stricter (default -1.0)
-WHISPER_COMPRESSION_RATIO_THRESHOLD = 2.0  # Lower = stricter (default 2.4)
+WHISPER_NO_SPEECH_THRESHOLD = 0.5
+WHISPER_LOGPROB_THRESHOLD = -0.8
+WHISPER_COMPRESSION_RATIO_THRESHOLD = 2.0
 
 # Audio energy threshold for detecting actual speech
-SILENCE_ENERGY_THRESHOLD = 0.01  # RMS energy below this = silence
+SILENCE_ENERGY_THRESHOLD = 0.01
 
 # VAD (Voice Activity Detection) settings
-VAD_THRESHOLD = 0.5  # Probability threshold for speech detection
-VAD_MIN_SPEECH_RATIO = 0.3  # Minimum ratio of speech frames in segment
+VAD_THRESHOLD = 0.5
+VAD_MIN_SPEECH_RATIO = 0.3
+
+# Confidence filtering for Whisper segments
+MIN_SEGMENT_AVG_LOGPROB = -0.7
 
 
 class LyricsGenerator:
     def __init__(self, whisper_model: str = "medium", language: str = "vi"):
-        self.whisper_model = whisper.load_model(whisper_model)
+        self.whisper_model = self._load_whisper_model(whisper_model)
         self.language = language
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -40,6 +40,7 @@ class LyricsGenerator:
                 model="silero_vad",
                 force_reload=False,
                 onnx=False,
+                trust_repo=True
             )
             self.vad_model = self.vad_model.to(self.device)
             self.get_speech_timestamps = vad_utils[0]
@@ -50,7 +51,8 @@ class LyricsGenerator:
             self.vad_model = None
             self.get_speech_timestamps = None
 
-        default_bundle = os.getenv("WAV2VEC2_ALIGN_BUNDLE") or "xlsr_300m"
+        # Use BASE_960H as default for lower memory usage, can override via env
+        default_bundle = os.getenv("WAV2VEC2_ALIGN_BUNDLE") or "base_960h"
         self.align_bundle = self._load_alignment_bundle(default_bundle)
         self.align_model = None
         self.align_sample_rate = 16000
@@ -71,8 +73,29 @@ class LyricsGenerator:
                 label.isalpha() and label.upper() == label for label in self.labels
             )
             self.align_enabled = True
+            print(f"[Alignment] wav2vec2 loaded: {len(self.labels)} labels")
         except Exception as error:
-            print(f"[Step 3] Wav2Vec2 alignment disabled: {error}")
+            print(f"[Alignment] wav2vec2 alignment disabled: {error}")
+
+    def _load_whisper_model(self, model_name: str):
+        """Load Whisper model with fallback to smaller models if memory is limited."""
+        # Order by memory efficiency for CPU environments
+        preferred_models = ["large-v3", "medium", "small", "base"]
+        
+        if model_name in preferred_models:
+            try_order = [model_name] + [m for m in preferred_models if m != model_name]
+        else:
+            try_order = [model_name] + preferred_models
+        
+        for model in try_order:
+            try:
+                print(f"[Whisper] Loading model: {model}")
+                return whisper.load_model(model)
+            except Exception as error:
+                print(f"[Whisper] Failed to load {model}: {error}")
+                continue
+        
+        raise RuntimeError("Failed to load any Whisper model")
 
     def _get_bundle_labels(self, bundle) -> list[str]:
         if hasattr(bundle, "get_labels") and callable(bundle.get_labels):
@@ -178,13 +201,13 @@ class LyricsGenerator:
             print(f"[VAD] Error processing segment: {error}")
             return 1.0  # Assume speech on error
 
-    def _filter_silent_segments(self, segments: list[dict], 
-                                 waveform: torch.Tensor, 
-                                 sample_rate: int) -> list[dict]:
+    def _filter_hallucinated_segments(self, segments: list[dict], 
+                                       waveform: torch.Tensor, 
+                                       sample_rate: int) -> list[dict]:
         """
-        Filter out segments where there's no actual speech.
-        Uses VAD (Voice Activity Detection) to detect speech vs music/silence.
-        Whisper may hallucinate text for instrumental portions - this removes them.
+        Filter out segments where there's no actual speech/singing.
+        Uses BOTH energy AND VAD - segment is removed only if both indicate silence.
+        This preserves soft singing that VAD alone might miss.
         """
         filtered = []
         removed_count = 0
@@ -193,42 +216,146 @@ class LyricsGenerator:
             start_time = segment.get("start", 0)
             end_time = segment.get("end", 0)
             text = segment.get("text", "").strip()
+            avg_logprob = segment.get("avg_logprob", 0.0)
             
-            # First check energy (fast filter for true silence)
-            energy = self._get_audio_energy(waveform, sample_rate, start_time, end_time)
-            
-            if energy < SILENCE_ENERGY_THRESHOLD:
-                print(f"[Step 1] Filtered silent segment: '{text}' "
-                      f"(energy={energy:.4f})")
+            # Confidence filtering based on logprob
+            if avg_logprob < MIN_SEGMENT_AVG_LOGPROB:
+                print(f"[Filter] Low confidence segment: '{text}' "
+                      f"(avg_logprob={avg_logprob:.2f})")
                 removed_count += 1
                 continue
             
-            # Then check VAD for speech detection (catches music without vocals)
+            # Calculate energy
+            energy = self._get_audio_energy(waveform, sample_rate, start_time, end_time)
+            
+            # Calculate speech ratio via VAD
             speech_ratio = self._get_speech_ratio_vad(waveform, sample_rate, start_time, end_time)
             
-            if speech_ratio < VAD_MIN_SPEECH_RATIO:
-                print(f"[Step 1] Filtered non-speech segment: '{text}' "
-                      f"(speech_ratio={speech_ratio:.2f}, threshold={VAD_MIN_SPEECH_RATIO})")
+            # Remove ONLY if BOTH energy is low AND speech ratio is low
+            # This preserves soft singing that VAD might miss
+            is_silent = energy < SILENCE_ENERGY_THRESHOLD
+            is_no_speech = speech_ratio < VAD_MIN_SPEECH_RATIO
+            
+            if is_silent and is_no_speech:
+                print(f"[Filter] Removed hallucinated segment: '{text}' "
+                      f"(energy={energy:.4f}, speech_ratio={speech_ratio:.2f})")
                 removed_count += 1
                 continue
             
             filtered.append(segment)
         
         if removed_count > 0:
-            print(f"[Step 1] Removed {removed_count} hallucinated segment(s)")
+            print(f"[Filter] Removed {removed_count} hallucinated segment(s)")
         
         return filtered
 
-    def step1_transcribe_rough(self, audio_path: str) -> dict[str, Any]:
-        print(f"[Step 1] Transcribing: {audio_path}")
+    def _clean_text_for_alignment(self, text: str) -> str:
+        """
+        Clean transcribed text for alignment.
+        Remove punctuation, keep Vietnamese letters and spaces.
+        """
+        # Remove punctuation and special characters, keep Vietnamese letters and spaces
+        cleaned = re.sub(r'[^\w\sàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]', '', text, flags=re.IGNORECASE)
+        # Collapse multiple spaces
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        return cleaned
 
-        # Load audio for energy analysis
+    def _normalize_vietnamese_for_alignment(self, text: str) -> str:
+        """
+        Normalize Vietnamese text for alignment.
+        
+        Strategy: Remove TONE marks but preserve vowel identity.
+        
+        Vietnamese tones to remove: ̀ ́ ̉ ̃ ̣ (combining diacritics)
+        
+        Vowel mappings (preserve base vowel structure):
+        ă, â → a
+        ê → e  
+        ô, ơ → o
+        ư → u
+        đ → d
+        
+        Example: "thương" → "thuong" (NOT "thng")
+        """
+        # First, clean punctuation
+        text = self._clean_text_for_alignment(text)
+        
+        # Vietnamese tone mark removal (combining diacritics)
+        # These are the 5 Vietnamese tones represented as combining marks
+        tone_marks = [
+            '\u0300',  # grave (huyền)
+            '\u0301',  # acute (sắc)
+            '\u0303',  # tilde (ngã)
+            '\u0309',  # hook above (hỏi)
+            '\u0323',  # dot below (nặng)
+        ]
+        
+        # Complete Vietnamese character mappings
+        # Maps each accented vowel to its base form (tone removed, vowel identity preserved)
+        vietnamese_char_map = {
+            # a with tones
+            'à': 'a', 'á': 'a', 'ả': 'a', 'ã': 'a', 'ạ': 'a',
+            # ă with tones → a
+            'ă': 'a', 'ằ': 'a', 'ắ': 'a', 'ẳ': 'a', 'ẵ': 'a', 'ặ': 'a',
+            # â with tones → a
+            'â': 'a', 'ầ': 'a', 'ấ': 'a', 'ẩ': 'a', 'ẫ': 'a', 'ậ': 'a',
+            # e with tones
+            'è': 'e', 'é': 'e', 'ẻ': 'e', 'ẽ': 'e', 'ẹ': 'e',
+            # ê with tones → e
+            'ê': 'e', 'ề': 'e', 'ế': 'e', 'ể': 'e', 'ễ': 'e', 'ệ': 'e',
+            # i with tones
+            'ì': 'i', 'í': 'i', 'ỉ': 'i', 'ĩ': 'i', 'ị': 'i',
+            # o with tones
+            'ò': 'o', 'ó': 'o', 'ỏ': 'o', 'õ': 'o', 'ọ': 'o',
+            # ô with tones → o
+            'ô': 'o', 'ồ': 'o', 'ố': 'o', 'ổ': 'o', 'ỗ': 'o', 'ộ': 'o',
+            # ơ with tones → o
+            'ơ': 'o', 'ờ': 'o', 'ớ': 'o', 'ở': 'o', 'ỡ': 'o', 'ợ': 'o',
+            # u with tones
+            'ù': 'u', 'ú': 'u', 'ủ': 'u', 'ũ': 'u', 'ụ': 'u',
+            # ư with tones → u
+            'ư': 'u', 'ừ': 'u', 'ứ': 'u', 'ử': 'u', 'ữ': 'u', 'ự': 'u',
+            # y with tones
+            'ỳ': 'y', 'ý': 'y', 'ỷ': 'y', 'ỹ': 'y', 'ỵ': 'y',
+            # đ → d
+            'đ': 'd',
+            # Uppercase versions
+            'À': 'A', 'Á': 'A', 'Ả': 'A', 'Ã': 'A', 'Ạ': 'A',
+            'Ă': 'A', 'Ằ': 'A', 'Ắ': 'A', 'Ẳ': 'A', 'Ẵ': 'A', 'Ặ': 'A',
+            'Â': 'A', 'Ầ': 'A', 'Ấ': 'A', 'Ẩ': 'A', 'Ẫ': 'A', 'Ậ': 'A',
+            'È': 'E', 'É': 'E', 'Ẻ': 'E', 'Ẽ': 'E', 'Ẹ': 'E',
+            'Ê': 'E', 'Ề': 'E', 'Ế': 'E', 'Ể': 'E', 'Ễ': 'E', 'Ệ': 'E',
+            'Ì': 'I', 'Í': 'I', 'Ỉ': 'I', 'Ĩ': 'I', 'Ị': 'I',
+            'Ò': 'O', 'Ó': 'O', 'Ỏ': 'O', 'Õ': 'O', 'Ọ': 'O',
+            'Ô': 'O', 'Ồ': 'O', 'Ố': 'O', 'Ổ': 'O', 'Ỗ': 'O', 'Ộ': 'O',
+            'Ơ': 'O', 'Ờ': 'O', 'Ớ': 'O', 'Ở': 'O', 'Ỡ': 'O', 'Ợ': 'O',
+            'Ù': 'U', 'Ú': 'U', 'Ủ': 'U', 'Ũ': 'U', 'Ụ': 'U',
+            'Ư': 'U', 'Ừ': 'U', 'Ứ': 'U', 'Ử': 'U', 'Ữ': 'U', 'Ự': 'U',
+            'Ỳ': 'Y', 'Ý': 'Y', 'Ỷ': 'Y', 'Ỹ': 'Y', 'Ỵ': 'Y',
+            'Đ': 'D',
+        }
+        
+        # Apply character mapping
+        normalized = []
+        for char in text:
+            if char in vietnamese_char_map:
+                normalized.append(vietnamese_char_map[char])
+            elif char not in tone_marks:
+                normalized.append(char)
+        
+        return ''.join(normalized)
+
+    def step1_transcribe(self, audio_path: str) -> dict[str, Any]:
+        """Transcribe audio using Whisper with Vietnamese singing optimization."""
+        print(f"[Transcribe] Processing: {audio_path}")
+
+        # Load audio for filtering
         waveform, sample_rate = torchaudio.load(audio_path)
         if waveform.size(0) > 1:
             waveform = waveform.mean(dim=0, keepdim=True)
 
-        # Use initial_prompt to guide Whisper - reduces hallucinations
-        initial_prompt = "Lời bài hát."
+        # Vietnamese contextual prompt for lyrics
+        initial_prompt = "Đây là lời bài hát tiếng Việt, hãy chép lại chính xác."
 
         result = self.whisper_model.transcribe(
             audio_path,
@@ -239,7 +366,6 @@ class LyricsGenerator:
             language=self.language,
             verbose=False,
             initial_prompt=initial_prompt,
-            # Stricter thresholds to prevent hallucinations
             no_speech_threshold=WHISPER_NO_SPEECH_THRESHOLD,
             logprob_threshold=WHISPER_LOGPROB_THRESHOLD,
             compression_ratio_threshold=WHISPER_COMPRESSION_RATIO_THRESHOLD,
@@ -248,42 +374,26 @@ class LyricsGenerator:
         raw_segments = result.get("segments", [])
         raw_text = result.get("text", "").strip()
         
-        # Filter segments with no actual audio energy (silence = hallucination)
-        filtered_segments = self._filter_silent_segments(raw_segments, waveform, sample_rate)
+        # Filter hallucinated segments
+        filtered_segments = self._filter_hallucinated_segments(
+            raw_segments, waveform, sample_rate
+        )
         
-        # Rebuild text from filtered segments
-        rough_text = " ".join(seg.get("text", "").strip() for seg in filtered_segments)
-        rough_text = re.sub(r"\s+", " ", rough_text).strip()
+        # Rebuild and clean text from filtered segments
+        lyrics_text = " ".join(seg.get("text", "").strip() for seg in filtered_segments)
+        lyrics_text = self._clean_text_for_alignment(lyrics_text)
 
         if len(filtered_segments) != len(raw_segments):
-            print(f"[Step 1] Raw text: {raw_text}")
-            print(f"[Step 1] Cleaned text: {rough_text}")
+            print(f"[Transcribe] Raw: {raw_text}")
+            print(f"[Transcribe] Cleaned: {lyrics_text}")
         else:
-            print(f"[Step 1] Rough text: {rough_text}")
+            print(f"[Transcribe] Lyrics: {lyrics_text}")
 
         return {
-            "rough_text": rough_text,
+            "lyrics_text": lyrics_text,
             "segments": filtered_segments,
             "language": result.get("language"),
         }
-
-    def step2_phonemize(self, text: str) -> list[str]:
-        print(f"[Step 2] Phonemizing: {text}")
-
-        backend = EspeakBackend(
-            language=self.language,
-            preserve_punctuation=False,
-            with_stress=False,
-        )
-
-        separator = Separator(phone=" ", word="|")
-        phonemes = backend.phonemize([text], separator=separator)
-
-        phoneme_words = [p.strip() for p in phonemes[0].split("|") if p.strip()]
-
-        print(f"[Step 2] Phonemes: {phoneme_words}")
-
-        return phoneme_words
 
     def _load_audio(self, audio_path: str) -> tuple[torch.Tensor, int]:
         waveform, sample_rate = torchaudio.load(audio_path)
@@ -299,16 +409,16 @@ class LyricsGenerator:
 
         return waveform, self.align_sample_rate
 
-    def _strip_diacritics(self, text: str) -> str:
-        decomposed = unicodedata.normalize("NFD", text)
-        stripped = "".join(char for char in decomposed if not unicodedata.combining(char))
-        return stripped.replace("đ", "d").replace("Đ", "D")
-
     def _normalize_text_for_alignment(self, text: str) -> str:
-        normalized = self._strip_diacritics(text)
+        """Normalize text for wav2vec2 alignment using Vietnamese grapheme normalization."""
+        # Apply Vietnamese-specific normalization
+        normalized = self._normalize_vietnamese_for_alignment(text)
+        
+        # Convert to appropriate case for model
         normalized = normalized.upper() if self.labels_are_upper else normalized.lower()
         normalized = re.sub(r"\s+", " ", normalized).strip()
 
+        # Filter to only characters in the model's vocabulary
         filtered: list[str] = []
         for char in normalized:
             if char == " ":
@@ -391,34 +501,36 @@ class LyricsGenerator:
 
         return words
 
-    def step3_align(
-        self, audio_path: str, rough_text: str
+    def step2_align(
+        self, audio_path: str, lyrics_text: str
     ) -> list[dict[str, Any]]:
-        print(f"[Step 3] Aligning with wav2vec2...")
+        """Align lyrics with audio using wav2vec2 forced alignment."""
+        print(f"[Align] Aligning with wav2vec2...")
 
         waveform, _ = self._load_audio(audio_path)
         aligned_words: list[dict[str, Any]] = []
 
         if self.align_enabled:
             try:
-                aligned_words = self._align_words_from_text(waveform, rough_text)
+                aligned_words = self._align_words_from_text(waveform, lyrics_text)
             except Exception as error:
-                print(f"[Step 3] Forced alignment failed: {error}")
+                print(f"[Align] Forced alignment failed: {error}")
         else:
-            print("[Step 3] Forced alignment unavailable, using duration fallback")
+            print("[Align] Forced alignment unavailable, using duration fallback")
 
-        print(f"[Step 3] Aligned {len(aligned_words)} words")
+        print(f"[Align] Aligned {len(aligned_words)} words")
 
         if aligned_words:
             return aligned_words
 
+        # Fallback to duration-based timing
         audio_duration = waveform.size(1) / self.align_sample_rate
-        rough_words = re.findall(r"\S+", rough_text)
+        words_list = re.findall(r"[a-zA-ZÀ-ỹ]+", lyrics_text)
 
-        if not rough_words:
+        if not words_list:
             return []
 
-        word_duration = audio_duration / len(rough_words)
+        word_duration = audio_duration / len(words_list)
 
         return [
             {
@@ -426,44 +538,42 @@ class LyricsGenerator:
                 "start": index * word_duration,
                 "end": (index + 1) * word_duration,
             }
-            for index, word in enumerate(rough_words)
+            for index, word in enumerate(words_list)
         ]
 
     def generate(self, audio_path: str) -> dict[str, Any]:
+        """Generate word-level timestamped lyrics from audio."""
         print("\n" + "=" * 60)
-        print("Phase 1: Lyrics Generation Pipeline")
+        print("Vietnamese Lyrics Generation Pipeline")
         print("=" * 60)
 
-        transcription = self.step1_transcribe_rough(audio_path)
-        rough_text = transcription["rough_text"]
+        # Step 1: Transcribe
+        transcription = self.step1_transcribe(audio_path)
+        lyrics_text = transcription["lyrics_text"]
 
-        phoneme_words = self.step2_phonemize(rough_text)
+        # Step 2: Align
+        aligned_words = self.step2_align(audio_path, lyrics_text)
+        original_words = re.findall(r"[a-zA-ZÀ-ỹ]+", lyrics_text)
 
-        aligned_words = self.step3_align(audio_path, rough_text)
-        rough_words = re.findall(r"\S+", rough_text)
-
+        # Combine original words with alignment timestamps
         combined_words: list[dict[str, Any]] = []
         for index, aligned in enumerate(aligned_words):
-            word_text = rough_words[index] if index < len(rough_words) else aligned["word"]
-            phoneme = phoneme_words[index] if index < len(phoneme_words) else ""
-
+            word_text = original_words[index] if index < len(original_words) else aligned["word"]
             combined_words.append(
                 {
                     "word": word_text,
-                    "phoneme": phoneme,
                     "start": aligned["start"],
                     "end": aligned["end"],
                 }
             )
 
         result = {
-            "rough_text": rough_text,
-            "phonemes": phoneme_words,
+            "lyrics_text": lyrics_text,
             "aligned_words": combined_words,
         }
 
         print("\n" + "=" * 60)
-        print("Phase 1 Complete!")
+        print("Pipeline Complete!")
         print("=" * 60)
         print(json.dumps(result, indent=2))
 
@@ -471,6 +581,7 @@ class LyricsGenerator:
 
 
 def generate_lyrics(vocals_path: str, language: str = "vi") -> list[dict[str, Any]]:
+    """Generate word-level timestamped lyrics from vocal audio."""
     generator = LyricsGenerator(
         whisper_model=os.getenv("WHISPER_MODEL", "medium"),
         language=language,
