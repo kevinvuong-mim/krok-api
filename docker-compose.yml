@@ -12,6 +12,8 @@ services:
     build:
       context: .
       dockerfile: worker/Dockerfile
+    volumes:
+      - ./uploads:/app/uploads
     environment:
       REDIS_PORT: 6379
       REDIS_HOST: redis
@@ -19,6 +21,8 @@ services:
       KARAOKE_JOB_NAME: ${KARAOKE_JOB_NAME:-process-video}
       KARAOKE_QUEUE_NAME: ${KARAOKE_QUEUE_NAME:-karaoke-processing}
       DATABASE_URL: postgresql://kwong2000:1234abcd@postgres:5432/krok
+      UPLOAD_DIR: /app/uploads
+      BASE_URL: ${BASE_URL:-http://localhost:3000}
 
   redis:
     ports:

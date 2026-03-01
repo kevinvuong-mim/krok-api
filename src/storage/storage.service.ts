@@ -1,14 +1,14 @@
 import { Injectable } from '@nestjs/common';
 
-import { S3Service } from '@/storage/providers/s3.service';
+import { LocalStorageService } from '@/storage/providers/local.service';
 import { IStorageService } from '@/storage/interfaces/storage.interface';
 
 @Injectable()
 export class StorageService implements IStorageService {
-  private provider: IStorageService;
+  private provider: LocalStorageService;
 
-  constructor(private s3Service: S3Service) {
-    this.provider = this.s3Service;
+  constructor(private localStorageService: LocalStorageService) {
+    this.provider = this.localStorageService;
   }
 
   async initialize(): Promise<void> {
@@ -21,5 +21,13 @@ export class StorageService implements IStorageService {
 
   async delete(key: string): Promise<void> {
     return this.provider.delete(key);
+  }
+
+  getFilePath(key: string): string {
+    return this.provider.getFilePath(key);
+  }
+
+  exists(key: string): boolean {
+    return this.provider.exists(key);
   }
 }

@@ -2,7 +2,7 @@ import os
 import sys
 import json
 import time
-import boto3
+import shutil
 import shlex
 import torch
 import logging
@@ -91,36 +91,22 @@ def update_asset_status(
 
 
 def upload_to_storage(local_file: Path, object_key: str, content_type: str) -> str:
-    """Upload file to S3-compatible storage."""
-    endpoint = os.getenv("AWS_ENDPOINT")
-    bucket_name = os.getenv("AWS_BUCKET_NAME")
-    access_key = os.getenv("AWS_ACCESS_KEY_ID")
-    region = os.getenv("AWS_REGION") or "us-east-1"
-    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-    public_base_url = os.getenv("KARAOKE_PUBLIC_BASE_URL") or endpoint
+    """Upload file to local storage (uploads folder)."""
+    # Get upload directory - defaults to 'uploads' folder relative to krok-api root
+    upload_dir = os.getenv("UPLOAD_DIR") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "uploads")
+    base_url = os.getenv("BASE_URL") or "http://localhost:3000"
 
-    if not endpoint or not bucket_name or not access_key or not secret_key:
-        raise RuntimeError(
-            "AWS_ENDPOINT, AWS_BUCKET_NAME, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY are required"
-        )
+    # Create target directory if it doesn't exist
+    target_path = Path(upload_dir) / object_key
+    target_path.parent.mkdir(parents=True, exist_ok=True)
 
-    s3_client = boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        region_name=region,
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-    )
+    # Copy file to uploads folder
+    shutil.copy2(str(local_file), str(target_path))
 
-    s3_client.upload_file(
-        str(local_file),
-        bucket_name,
-        object_key,
-        ExtraArgs={"ContentType": content_type},
-    )
+    logger.info(f"File saved to local storage: {target_path}")
 
-    # Assume base URL already includes bucket when needed
-    return f"{public_base_url.rstrip('/')}/{object_key}"
+    # Return the public URL for accessing the file
+    return f"{base_url.rstrip('/')}/files/{object_key}"
 
 
 def generate_lyrics(vocals_path: Path, output_path: Path) -> list[dict[str, Any]]:

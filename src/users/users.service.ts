@@ -15,8 +15,7 @@ import { ImageProcessingService } from '@/image-processing/image-processing.serv
 
 @Injectable()
 export class UsersService {
-  private readonly awsEndpoint: string;
-  private readonly awsBucketName: string;
+  private readonly baseUrl: string;
 
   constructor(
     private prisma: PrismaService,
@@ -24,8 +23,8 @@ export class UsersService {
     private configService: ConfigService,
     private imageProcessing: ImageProcessingService,
   ) {
-    this.awsEndpoint = this.configService.get<string>('AWS_ENDPOINT') || '';
-    this.awsBucketName = this.configService.get<string>('AWS_BUCKET_NAME') || '';
+    // Base URL for serving files (e.g., http://localhost:3000)
+    this.baseUrl = this.configService.get<string>('BASE_URL') || 'http://localhost:3000';
   }
 
   private buildAvatarUrl(avatarKey: string | null): string | null {
@@ -34,7 +33,8 @@ export class UsersService {
     // If avatar is already a full URL (legacy data from Google OAuth)
     if (/^https?:\/\//.test(avatarKey)) return avatarKey;
 
-    return `${this.awsEndpoint}/${this.awsBucketName}/${avatarKey}`;
+    // Build URL for local file serving
+    return `${this.baseUrl}/files/${avatarKey}`;
   }
 
   async getCurrentUser(userId: string) {

@@ -75,6 +75,8 @@ const worker = new Worker(
   {
     concurrency,
     connection: redisConnection,
+    lockDuration: 600000, // 10 minutes - for long-running video processing
+    lockRenewTime: 300000, // Renew lock every 5 minutes
   },
 );
 
