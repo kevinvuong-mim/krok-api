@@ -106,7 +106,7 @@ def upload_to_storage(local_file: Path, object_key: str, content_type: str) -> s
     logger.info(f"File saved to local storage: {target_path}")
 
     # Return the public URL for accessing the file
-    return f"{base_url.rstrip('/')}/files/{object_key}"
+    return f"{base_url.rstrip('/')}/uploads/{object_key}"
 
 
 def generate_lyrics(vocals_path: Path, output_path: Path) -> list[dict[str, Any]]:
